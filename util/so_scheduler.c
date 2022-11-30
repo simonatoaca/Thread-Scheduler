@@ -72,6 +72,7 @@ void *start_thread(void *info) {
         fprintf(stderr, "start thread stopped waiting\n");
     }
     thread->start_routine(thread->priority);
+    free(info);
     return 0;
 }
 
@@ -132,7 +133,10 @@ void so_end(void) {
     int n_threads = ll_get_size(scheduler.thread_ids);
     for (int i = 0; i < n_threads; i++) {
         fprintf(stderr, "Thread join\n");
-        tid_t thread_id = *((tid_t *)ll_remove_nth_node(scheduler.thread_ids, 0)->data);
+        ll_node_t *node = ll_remove_nth_node(scheduler.thread_ids, 0);
+        tid_t thread_id = *((tid_t *)node->data);
+        free(node->data);
+        free(node);
         fprintf(stderr, "thread %p\n", thread_id);
         if (pthread_join(thread_id, NULL)) {
             fprintf(stderr, "[pthread_join()] error %d\n", errno);
