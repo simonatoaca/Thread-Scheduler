@@ -76,6 +76,16 @@ void q_enqueue(queue_t *q, void *new_data)
 	ll_add_node(q->list, new_data);
 }
 
+void q_clear(queue_t *q)
+{
+	DIE(!q, "The queue does not exist\n");
+
+	unsigned int st_len = q_get_size(q);
+	for (int i = 0; i < st_len; i++) {
+		q_dequeue(q);
+	}
+}
+
 void q_free(queue_t *q, void(*free_data)(ll_node_t *))
 {
 	DIE(!q, "The queue does not exist\n");
