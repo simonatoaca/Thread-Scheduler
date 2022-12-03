@@ -14,7 +14,7 @@ typedef struct {
 } prio_queue_t;
 
 prio_queue_t *
-pq_create(unsigned int data_size, unsigned int max_prio);
+pq_create(unsigned int max_prio);
 
 unsigned int
 pq_get_size(prio_queue_t *pq);
@@ -25,7 +25,7 @@ pq_is_empty(prio_queue_t *pq);
 void *
 pq_front(prio_queue_t *pq);
 
-void
+void *
 pq_dequeue(prio_queue_t *pq);
 
 void
@@ -36,6 +36,5 @@ pq_clear(prio_queue_t *pq);
 
 void
 pq_free(prio_queue_t *pq);
-
 
 #endif

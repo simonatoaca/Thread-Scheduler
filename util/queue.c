@@ -6,14 +6,12 @@
 
 #include "linked_list.h"
 #include "queue.h"
-#define MAX_STRING_SIZE	256
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
 
-queue_t *q_create(unsigned int data_size)
+queue_t *q_create()
 {
 	queue_t *q = malloc(sizeof(*q));
 	DIE(!q, "Failed queue allocation\n");
-	q->list = ll_create(data_size);
+	q->list = ll_create();
 	if (!q->list) {
 		fprintf(stderr, "Failed queue allocation.\n");
 		free(q);
@@ -56,17 +54,17 @@ void *q_front(queue_t *q)
 		curr_node = curr_node->next;
 	}
 	
-	return curr_node->data;
+	return curr_node->info;
 }
 
-void q_dequeue(queue_t *q)
+void *q_dequeue(queue_t *q)
 {
 	DIE(!q, "The queue does not exist\n");
 	if (q_get_size(q)) {
-		ll_node_t *curr_node = ll_remove_nth_node(q->list, q->list->size - 1);
-		free(curr_node->data);
-		free(curr_node);
+		ll_node_t *curr_node = ll_remove_node(q->list);
+		return curr_node->info;
 	}
+	return NULL;
 }
 
 void q_enqueue(queue_t *q, void *new_data)
@@ -75,7 +73,7 @@ void q_enqueue(queue_t *q, void *new_data)
 	if (!new_data) {
 		fprintf(stderr, "The data is NULL\n");
 	}
-	ll_add_nth_node(q->list, 0, new_data);
+	ll_add_node(q->list, new_data);
 }
 
 void q_clear(queue_t *q)
@@ -88,10 +86,10 @@ void q_clear(queue_t *q)
 	}
 }
 
-void q_free(queue_t *q)
+void q_free(queue_t *q, void(*free_data)(ll_node_t *))
 {
 	DIE(!q, "The queue does not exist\n");
 	q_clear(q);
-	ll_free(&q->list);
+	ll_free(q->list, free_data);
 	free(q);
 }
