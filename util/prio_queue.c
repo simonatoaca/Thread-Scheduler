@@ -37,9 +37,12 @@ unsigned int pq_get_size(prio_queue_t *pq) {
 }
 
 unsigned int pq_is_empty(prio_queue_t *pq) {
-    if (!pq_get_size(pq))
-        return 1;
-    return 0;
+    for (int prio = pq->max_prio; prio >= 0; prio--) {
+        if (!q_is_empty(pq->queues[prio])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 void *pq_front(prio_queue_t *pq) {
@@ -79,10 +82,10 @@ void pq_clear(prio_queue_t *pq) {
     }
 }
 
-void pq_free(prio_queue_t *pq) {
+void pq_free(prio_queue_t *pq, void(*free_data)(ll_node_t *)) {
     if (!pq) return;
     for (int i = 0; i <= pq->max_prio; i++) {
-        q_free(pq->queues[i], free);
+        q_free(pq->queues[i], free_data);
     }
     free(pq->queues);
     free(pq);

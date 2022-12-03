@@ -34,7 +34,6 @@ pq_enqueue(prio_queue_t *pq, void *new_data, int prio);
 void
 pq_clear(prio_queue_t *pq);
 
-void
-pq_free(prio_queue_t *pq);
+void pq_free(prio_queue_t *pq, void(*free_data)(ll_node_t *));
 
 #endif

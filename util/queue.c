@@ -38,7 +38,7 @@ unsigned int q_get_size(queue_t *q)
 
 unsigned int q_is_empty(queue_t *q)
 {
-	if (!q_get_size(q))
+	if (ll_is_empty(q->list))
 		return 1;
 	return 0;
 }
@@ -62,7 +62,7 @@ void *q_dequeue(queue_t *q)
 	DIE(!q, "The queue does not exist\n");
 	if (q_get_size(q)) {
 		ll_node_t *curr_node = ll_remove_node(q->list);
-		return curr_node->info;
+		return curr_node;
 	}
 	return NULL;
 }
@@ -76,20 +76,9 @@ void q_enqueue(queue_t *q, void *new_data)
 	ll_add_node(q->list, new_data);
 }
 
-void q_clear(queue_t *q)
-{
-	DIE(!q, "The queue does not exist\n");
-
-	unsigned int st_len = q_get_size(q);
-	for (int i = 0; i < st_len; i++) {
-		q_dequeue(q);
-	}
-}
-
 void q_free(queue_t *q, void(*free_data)(ll_node_t *))
 {
 	DIE(!q, "The queue does not exist\n");
-	q_clear(q);
 	ll_free(q->list, free_data);
 	free(q);
 }

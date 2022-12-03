@@ -6,12 +6,20 @@
 #include "linked_list.h"
 #include "utils.h"
 
+typedef enum {
+    READY,
+    RUNNING,
+    WAITING,
+    TERMINATED
+} status_t;
+
 typedef struct {
     tid_t tid;
     unsigned int priority;
     so_handler *start_routine;
     int time_remaining;
     unsigned int preempted;
+    status_t status;
     sem_t run;
     sem_t planned;
 } thread_t;
@@ -23,7 +31,8 @@ typedef struct {
     thread_t *running_thread;   /* The thread currently running */
     prio_queue_t *ready;        /* The queue for round robin implementation */
     linked_list_t *waiting;     /* The threads waiting for a signal */
-    linked_list_t *thread_ids;  /* Thread ids - used for pthread_join */
+    linked_list_t *threads;     /* All threads - used for pthread_join */
+    sem_t has_finished;         /* Used for waiting for all threads to terminate */
 } scheduler_t;
 
 static scheduler_t scheduler;
@@ -42,22 +51,31 @@ int so_init(unsigned int time_quantum, unsigned int io) {
     if (!scheduler.ready) return SCHED_INIT_ERR;
     scheduler.waiting = ll_create();
     if (!scheduler.waiting) return SCHED_INIT_ERR;
-    scheduler.thread_ids = ll_create();
-    if (!scheduler.thread_ids) return SCHED_INIT_ERR;
+    scheduler.threads = ll_create();
+     if (!scheduler.threads) return SCHED_INIT_ERR;
+
+    sem_init(&scheduler.has_finished, 0, 0);
+
     return 0;
 }
 
-void run_next_thread(thread_t *thread) {
-    if (scheduler.running_thread == thread) {
-        fprintf(stderr, "Start current thread %p\n", thread->tid);
-        sem_post(&thread->run);
-    } else {
-        pq_enqueue(scheduler.ready, thread, thread->priority);
-        thread_t *new_thread = pq_dequeue(scheduler.ready);
-        fprintf(stderr, "Thread %p run next\n", new_thread->tid);
-        sem_post(&new_thread->run);
-        scheduler.running_thread = new_thread;
+void run_next_thread() {
+
+    if (pq_is_empty(scheduler.ready) && scheduler.running_thread->status == TERMINATED) {
+        fprintf(stderr, "posted1\n");
+        sem_post(&scheduler.has_finished);
+        return;
     }
+
+    ll_node_t *thread_node = pq_dequeue(scheduler.ready);
+    thread_t *new_thread = thread_node->info;
+    free(thread_node);
+
+    if (scheduler.running_thread->status != TERMINATED)
+        pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
+    fprintf(stderr, "Thread %p run next\n", new_thread->tid);
+    scheduler.running_thread = new_thread;
+    sem_post(&new_thread->run);
 }
 
 void *start_thread(void *info) {
@@ -65,12 +83,18 @@ void *start_thread(void *info) {
     
     plan_thread(thread);
 
-    fprintf(stderr, "Thread %p waiting\n", thread->tid);
-    sem_wait(&thread->run);
-    fprintf(stderr, "Thread %p stopped waiting\n", thread->tid);
-
+    if (scheduler.running_thread != thread) {
+        fprintf(stderr, "Thread %p waiting\n", thread->tid);
+        sem_wait(&thread->run);
+        fprintf(stderr, "Thread %p stopped waiting\n", thread->tid);
+    } else {
+        fprintf(stderr, "Thread %p is first\n", thread->tid);
+    }
+    
     thread->start_routine(thread->priority);
     fprintf(stderr, "Thread %p finished\n", thread->tid);
+    thread->status = TERMINATED;
+    run_next_thread();
 }
 
 void plan_thread(thread_t *thread) {
@@ -100,20 +124,19 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
     new_thread->priority = priority;
     new_thread->preempted = 0;
     new_thread->start_routine = func;
+    new_thread->status = READY;
 
     sem_init(&new_thread->run, 0, 0);
     sem_init(&new_thread->planned, 0, 0);
+
+    ll_add_node(scheduler.threads, new_thread);
 
     /* Start thread */
     if (pthread_create(&new_thread->tid, NULL, start_thread, new_thread)) {
         fprintf(stderr, "pthread_create error %d\n", errno);
     }
 
-    ll_add_node(scheduler.thread_ids, new_thread->tid);
-
     sem_wait(&new_thread->planned);
-
-    run_next_thread(new_thread);
 
     return new_thread->tid;
 }
@@ -130,25 +153,33 @@ void so_exec(void) {
 
 }
 
+void free_thread(ll_node_t *thread_node) {
+    if (!thread_node)
+        return;
+    free(thread_node->info);
+    free(thread_node);
+}
+
 void so_end(void) {
     scheduler.is_running = 0;
 
     /* Wait for all threads to terminate */
-    if (!ll_is_empty(scheduler.thread_ids)) {
-        ll_node_t *curr_node = scheduler.thread_ids->head;
+    if (!ll_is_empty(scheduler.threads)) {
+        sem_wait(&scheduler.has_finished);
+        ll_node_t *curr_node = scheduler.threads->head;
         while (curr_node) {
-            tid_t thread_id = *((tid_t *)curr_node->info);
-            //fprintf(stderr, "thread join %p\n\n", thread_id);
-            if (pthread_join(thread_id, NULL)) {
+            thread_t *thread = curr_node->info;
+            fprintf(stderr, "thread join %p\n\n", thread->tid);
+            if (pthread_join(thread->tid, NULL)) {
                 fprintf(stderr, "[pthread_join()] error %d\n", errno);
             }
             curr_node = curr_node->next;
         }
-        free(scheduler.running_thread);
     }
 
+
     /* Free scheduler internals */
-    pq_free(scheduler.ready);
-    ll_free(scheduler.waiting, free);
-    ll_free(scheduler.thread_ids, free);
+    pq_free(scheduler.ready, free_thread);
+    ll_free(scheduler.waiting, free_thread);
+    ll_free(scheduler.threads, free_thread);
 }
