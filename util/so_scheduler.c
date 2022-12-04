@@ -72,14 +72,6 @@ void run_next_thread() {
     ll_node_t *thread_node = pq_dequeue(scheduler.ready);
     thread_t *new_thread = thread_node->info;
     free(thread_node);
-
-    /* Do not add the previous thread to the queue if it is terminated
-    *  or if it is the previously running one
-    */
-        // if (scheduler.running_thread->status != TERMINATED && new_thread != scheduler.running_thread) {
-        //     fprintf(stderr, "!!!!!!!!This is enqueued %p prio %d\n", scheduler.running_thread->tid, scheduler.running_thread->priority);
-        //     pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
-        // }
     
     fprintf(stderr, "Thread %p run next\n", new_thread->tid);
 
@@ -114,7 +106,12 @@ void plan_thread(thread_t *thread) {
         scheduler.running_thread = thread;
     } else if (scheduler.running_thread->priority < thread->priority) {
         fprintf(stderr, "This has a greater prio %p\n", thread->tid);
-        pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
+
+        /* Plan current thread and then set the greater prio thread as the current one */
+        thread_t *current_thread = scheduler.running_thread;
+        plan_thread(current_thread);
+        sem_wait(&current_thread->planned);
+
         scheduler.running_thread = thread;
     } else {
         fprintf(stderr, "This is enqueued %p prio %d\n", thread->tid, thread->priority);
@@ -146,6 +143,8 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
 
     ll_add_node(scheduler.threads, new_thread);
 
+    thread_t *old_thread = scheduler.running_thread;
+
     /* Decrement time quantum for the current thread*/
     if (scheduler.running_thread) {
         scheduler.running_thread->time_remaining--;
@@ -160,10 +159,17 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
         fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
     }
 
-    /* Start the forked thread now if it is the case */
+    /*  Start the forked thread now if it is the case.
+        Also handle preemption.
+    */
     if (scheduler.running_thread == new_thread) {
         fprintf(stderr, "Start thread cuz it's first\n");
         sem_post(&scheduler.running_thread->run);
+
+        /* Preemption of the old thread */
+        if (old_thread) {
+            sem_wait(&old_thread->run);
+        }
     }
     
     fprintf(stderr, "SO FORK %p RETURNED\n", pthread_self());
