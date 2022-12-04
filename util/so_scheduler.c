@@ -52,7 +52,7 @@ int so_init(unsigned int time_quantum, unsigned int io) {
     scheduler.waiting = ll_create();
     if (!scheduler.waiting) return SCHED_INIT_ERR;
     scheduler.threads = ll_create();
-     if (!scheduler.threads) return SCHED_INIT_ERR;
+    if (!scheduler.threads) return SCHED_INIT_ERR;
 
     sem_init(&scheduler.has_finished, 0, 0);
 
@@ -60,22 +60,37 @@ int so_init(unsigned int time_quantum, unsigned int io) {
 }
 
 void run_next_thread() {
-
+    /* Check if the last thread ended -> the scheduler can also end */
     if (pq_is_empty(scheduler.ready) && scheduler.running_thread->status == TERMINATED) {
-        fprintf(stderr, "posted1\n");
-        sem_post(&scheduler.has_finished);
+        if (sem_post(&scheduler.has_finished)) {
+            fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
+        }
         return;
     }
 
+    /* Get next thread planned */
     ll_node_t *thread_node = pq_dequeue(scheduler.ready);
     thread_t *new_thread = thread_node->info;
     free(thread_node);
 
-    if (scheduler.running_thread->status != TERMINATED)
-        pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
+    /* Do not add the previous thread to the queue if it is terminated
+    *  or if it is the previously running one
+    */
+        // if (scheduler.running_thread->status != TERMINATED && new_thread != scheduler.running_thread) {
+        //     fprintf(stderr, "!!!!!!!!This is enqueued %p prio %d\n", scheduler.running_thread->tid, scheduler.running_thread->priority);
+        //     pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
+        // }
+    
     fprintf(stderr, "Thread %p run next\n", new_thread->tid);
+
+    /* Run the planned thread */
     scheduler.running_thread = new_thread;
-    sem_post(&new_thread->run);
+    scheduler.running_thread->preempted = 0;
+    scheduler.running_thread->status = RUNNING;
+    scheduler.running_thread->time_remaining = scheduler.time_quantum;
+    if (sem_post(&new_thread->run)) {
+        fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
+    }
 }
 
 void *start_thread(void *info) {
@@ -83,14 +98,10 @@ void *start_thread(void *info) {
     
     plan_thread(thread);
 
-    if (scheduler.running_thread != thread) {
-        fprintf(stderr, "Thread %p waiting\n", thread->tid);
-        sem_wait(&thread->run);
-        fprintf(stderr, "Thread %p stopped waiting\n", thread->tid);
-    } else {
-        fprintf(stderr, "Thread %p is first\n", thread->tid);
-    }
-    
+    fprintf(stderr, "Thread %p waiting\n", thread->tid);
+    sem_wait(&thread->run);
+    fprintf(stderr, "Thread %p stopped waiting\n", thread->tid);
+
     thread->start_routine(thread->priority);
     fprintf(stderr, "Thread %p finished\n", thread->tid);
     thread->status = TERMINATED;
@@ -99,17 +110,21 @@ void *start_thread(void *info) {
 
 void plan_thread(thread_t *thread) {
     if (!scheduler.running_thread) {
-        fprintf(stderr, "This is the first thread %p\n", thread->tid);
+        fprintf(stderr, "This is the first thread/is the only one %p\n", thread->tid);
         scheduler.running_thread = thread;
     } else if (scheduler.running_thread->priority < thread->priority) {
         fprintf(stderr, "This has a greater prio %p\n", thread->tid);
         pq_enqueue(scheduler.ready, scheduler.running_thread, scheduler.running_thread->priority);
         scheduler.running_thread = thread;
     } else {
-        fprintf(stderr, "This is enqueued %p\n", thread->tid);
+        fprintf(stderr, "This is enqueued %p prio %d\n", thread->tid, thread->priority);
         pq_enqueue(scheduler.ready, thread, thread->priority);
     }
-    sem_post(&thread->planned);
+
+    /* Signal that the thread was planned */
+    if (sem_post(&thread->planned)) {
+        fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
+    }
 }
 
 tid_t so_fork(so_handler *func, unsigned int priority) {
@@ -120,7 +135,7 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
     }
 
     /* Initialize thread struct */
-    thread_t *new_thread = malloc(sizeof(*new_thread));
+    thread_t *new_thread = calloc(1, sizeof(*new_thread));
     new_thread->priority = priority;
     new_thread->preempted = 0;
     new_thread->start_routine = func;
@@ -131,13 +146,27 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
 
     ll_add_node(scheduler.threads, new_thread);
 
+    /* Decrement time quantum for the current thread*/
+    if (scheduler.running_thread) {
+        scheduler.running_thread->time_remaining--;
+    }
+
     /* Start thread */
     if (pthread_create(&new_thread->tid, NULL, start_thread, new_thread)) {
         fprintf(stderr, "pthread_create error %d\n", errno);
     }
 
-    sem_wait(&new_thread->planned);
+    if (sem_wait(&new_thread->planned)) {
+        fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
+    }
 
+    /* Start the forked thread now if it is the case */
+    if (scheduler.running_thread == new_thread) {
+        fprintf(stderr, "Start thread cuz it's first\n");
+        sem_post(&scheduler.running_thread->run);
+    }
+    
+    fprintf(stderr, "SO FORK %p RETURNED\n", pthread_self());
     return new_thread->tid;
 }
 
@@ -150,7 +179,25 @@ int so_signal(unsigned int io) {
 }
 
 void so_exec(void) {
+    fprintf(stderr, "SO_EXEC %p\n", scheduler.running_thread->tid);
+    if (scheduler.running_thread) {
+        scheduler.running_thread->time_remaining--;
+    }
 
+    if (scheduler.running_thread && scheduler.running_thread->time_remaining <= 0) {
+        fprintf(stderr, "%p PREEMPTED\n", scheduler.running_thread->tid);
+        scheduler.running_thread->preempted = 1;
+        scheduler.running_thread->status = READY;
+
+        thread_t *current_thread = scheduler.running_thread;
+
+        plan_thread(current_thread);
+        sem_wait(&current_thread->planned);
+
+        run_next_thread();
+
+        sem_wait(&current_thread->run);
+    }
 }
 
 void free_thread(ll_node_t *thread_node) {
@@ -171,12 +218,11 @@ void so_end(void) {
             thread_t *thread = curr_node->info;
             fprintf(stderr, "thread join %p\n\n", thread->tid);
             if (pthread_join(thread->tid, NULL)) {
-                fprintf(stderr, "[pthread_join()] error %d\n", errno);
+                fprintf(stderr, "pthread_join() error %d\n", errno);
             }
             curr_node = curr_node->next;
         }
     }
-
 
     /* Free scheduler internals */
     pq_free(scheduler.ready, free_thread);
