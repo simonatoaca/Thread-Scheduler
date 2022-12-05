@@ -12,7 +12,7 @@ linked_list_t *ll_create() {
 
 int ll_add_node(linked_list_t *list, void *info) {
 	if (!list) {
-		fprintf(stderr, "No list :(");
+		fprintf(stderr, "The list is null\n");
 		return 0;
 	}
 
@@ -27,7 +27,7 @@ int ll_add_node(linked_list_t *list, void *info) {
 
 ll_node_t *ll_remove_node(linked_list_t *list) {
 	if (!list) {
-		fprintf(stderr, "No list :(");
+		fprintf(stderr, "The list is null\n");
 		return NULL;
 	}
 
@@ -61,7 +61,7 @@ int ll_is_empty(linked_list_t *list) {
 
 void ll_free(linked_list_t *list, void(*free_data)(ll_node_t *)) {
 	if (!list) {
-		fprintf(stderr, "No list :(");
+		fprintf(stderr, "The list is null\n");
 		return;
 	}
 

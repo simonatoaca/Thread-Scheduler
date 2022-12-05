@@ -34,18 +34,22 @@ typedef struct {
 } thread_t;
 
 typedef struct {
+    unsigned int waiting_thread_no;
+    queue_t *waiting_list;
+} io_device_t;
+
+typedef struct {
     unsigned int is_running;    /* Scheduler state */
     unsigned int time_quantum;  /* Max time quantum for each thread */
     unsigned int io_number;     /* Max io devices supported */
     thread_t *running_thread;   /* The thread currently running */
     prio_queue_t *ready;        /* The queue for round robin implementation */
-    linked_list_t *waiting;     /* The threads waiting for a signal */
+    io_device_t *io_devices;    /* The supported io devices */
     linked_list_t *threads;     /* All threads - used for pthread_join */
     sem_t has_finished;         /* Used for waiting for all threads to terminate */
 } scheduler_t;
 
 static scheduler_t scheduler;
-static int n_threads = 0;
 
 int so_init(unsigned int time_quantum, unsigned int io) {
     /* Check params */
@@ -59,10 +63,13 @@ int so_init(unsigned int time_quantum, unsigned int io) {
     scheduler.io_number = io;
     scheduler.ready = pq_create(SO_MAX_PRIO + 1);
     if (!scheduler.ready) return SCHED_INIT_ERR;
-    scheduler.waiting = ll_create();
-    if (!scheduler.waiting) return SCHED_INIT_ERR;
     scheduler.threads = ll_create();
     if (!scheduler.threads) return SCHED_INIT_ERR;
+    scheduler.io_devices = calloc(io, sizeof(io_device_t));
+    if (!scheduler.io_devices) return SCHED_INIT_ERR;
+    for (int i = 0; i < io; i++) {
+        scheduler.io_devices[i].waiting_list = q_create();
+    }
 
     sem_init(&scheduler.has_finished, 0, 0);
 
@@ -100,13 +107,11 @@ void *start_thread(void *info) {
     
     plan_thread(thread);
 
-    //fprintf(stderr, "Thread %p waiting\n", thread->tid);
     sem_wait(&thread->run);
     fprintf(stderr, "Thread %p started\n", thread->tid);
 
     thread->start_routine(thread->priority);
     fprintf(stderr, "Thread %p finished\n", thread->tid);
-    n_threads--;
     thread->status = TERMINATED;
     run_next_thread();
 }
@@ -137,7 +142,7 @@ void plan_thread(thread_t *thread) {
 
 tid_t so_fork(so_handler *func, unsigned int priority) {
     fprintf(stderr, GRN "SO FORK %p\n" RESET, pthread_self());
-    n_threads++;
+
     /* Check params */
     if (!func || priority > SO_MAX_PRIO) {
         return INVALID_TID;
@@ -171,7 +176,6 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
     /* Decrement time quantum for the thread that called so fork */
     if (old_thread) {
         old_thread->time_remaining--;
-        fprintf(stderr, MAG "fork --  %d\n" RESET, old_thread->time_remaining);
     }
 
     /*  Start the forked thread now if it is the case.
@@ -205,18 +209,63 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
 }
 
 int so_wait(unsigned int io) {
+    if (io >= scheduler.io_number) {
+        return -1;
+    }
+
+    fprintf(stderr, RED "SO WAIT for %d, thread %p\n" RESET, io, scheduler.running_thread->tid);
+
+    /* Add the calling thread to the waiting list */
+    thread_t *current_thread = scheduler.running_thread;
+    q_enqueue(scheduler.io_devices[io].waiting_list, current_thread);
+    scheduler.io_devices[io].waiting_thread_no++;
+
+    /* Preemption */
+    run_next_thread();
+    sem_wait(&current_thread->run);
+
     return 0;
 }
 
 int so_signal(unsigned int io) {
-    return 0;
+    if (io >= scheduler.io_number) {
+        /* The io is not valid, so no threads are woken */
+        return -1;
+    }
+
+    if (q_is_empty(scheduler.io_devices[io].waiting_list)) {
+        return 0;
+    }
+
+    fprintf(stderr, RED "SO SIGNAL %d\n" RESET, io);
+    thread_t *current_thread = scheduler.running_thread;
+
+    while (!q_is_empty(scheduler.io_devices[io].waiting_list)) {
+        ll_node_t *node = q_dequeue(scheduler.io_devices[io].waiting_list);
+        thread_t *thread = node->info;
+
+        plan_thread(thread);
+        fprintf(stderr, RED "%p WOKEN UP BY %d\n" RESET, thread->tid, io);
+        free(node);
+    }
+
+    /* A thread with a higher prio entered the sched */
+    if (scheduler.running_thread != current_thread) {
+        fprintf(stderr, GRN "%p HAS HIGHER PRIO %d\n" RESET, scheduler.running_thread->tid);
+        plan_thread(current_thread);
+        sem_wait(&current_thread->planned);
+
+        sem_post(&scheduler.running_thread->run);
+        sem_wait(&current_thread->run);
+    }
+
+    return 1;
 }
 
 void so_exec(void) {
     fprintf(stderr, MAG "SO_EXEC %p\n" RESET, scheduler.running_thread->tid);
     if (scheduler.running_thread) {
         scheduler.running_thread->time_remaining--;
-        fprintf(stderr, MAG "exec -- %d\n" RESET, scheduler.running_thread->time_remaining);
     }
 
     if (scheduler.running_thread && scheduler.running_thread->time_remaining <= 0) {
@@ -258,10 +307,13 @@ void so_end(void) {
         }
     }
 
-    fprintf(stderr, "n threads %d\n", n_threads);
-
     /* Free scheduler internals */
     pq_free(scheduler.ready, free_thread);
-    ll_free(scheduler.waiting, free_thread);
     ll_free(scheduler.threads, free_thread);
+
+    for (int i = 0; i < scheduler.io_number; i++) {
+        q_free(scheduler.io_devices[i].waiting_list, free);
+    }
+
+    free(scheduler.io_devices);
 }
