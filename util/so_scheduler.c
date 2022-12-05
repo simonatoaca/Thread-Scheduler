@@ -6,6 +6,15 @@
 #include "linked_list.h"
 #include "utils.h"
 
+#define RED   "\x1B[31m"
+#define GRN   "\x1B[32m"
+#define YEL   "\x1B[33m"
+#define BLU   "\x1B[34m"
+#define MAG   "\x1B[35m"
+#define CYN   "\x1B[36m"
+#define WHT   "\x1B[37m"
+#define RESET "\x1B[0m"
+
 typedef enum {
     READY,
     RUNNING,
@@ -36,6 +45,7 @@ typedef struct {
 } scheduler_t;
 
 static scheduler_t scheduler;
+static int n_threads = 0;
 
 int so_init(unsigned int time_quantum, unsigned int io) {
     /* Check params */
@@ -73,7 +83,7 @@ void run_next_thread() {
     thread_t *new_thread = thread_node->info;
     free(thread_node);
     
-    fprintf(stderr, "Thread %p run next\n", new_thread->tid);
+    fprintf(stderr, GRN "RUN NEXT: %p\n" RESET, new_thread->tid);
 
     /* Run the planned thread */
     scheduler.running_thread = new_thread;
@@ -90,12 +100,13 @@ void *start_thread(void *info) {
     
     plan_thread(thread);
 
-    fprintf(stderr, "Thread %p waiting\n", thread->tid);
+    //fprintf(stderr, "Thread %p waiting\n", thread->tid);
     sem_wait(&thread->run);
-    fprintf(stderr, "Thread %p stopped waiting\n", thread->tid);
+    fprintf(stderr, "Thread %p started\n", thread->tid);
 
     thread->start_routine(thread->priority);
     fprintf(stderr, "Thread %p finished\n", thread->tid);
+    n_threads--;
     thread->status = TERMINATED;
     run_next_thread();
 }
@@ -105,7 +116,7 @@ void plan_thread(thread_t *thread) {
         fprintf(stderr, "This is the first thread/is the only one %p\n", thread->tid);
         scheduler.running_thread = thread;
     } else if (scheduler.running_thread->priority < thread->priority) {
-        fprintf(stderr, "This has a greater prio %p\n", thread->tid);
+        fprintf(stderr, RED "GREATER PRIO %p\n" RESET, thread->tid);
 
         /* Plan current thread and then set the greater prio thread as the current one */
         thread_t *current_thread = scheduler.running_thread;
@@ -114,7 +125,7 @@ void plan_thread(thread_t *thread) {
 
         scheduler.running_thread = thread;
     } else {
-        fprintf(stderr, "This is enqueued %p prio %d\n", thread->tid, thread->priority);
+        fprintf(stderr, YEL "ENQUEUE %p prio %d\n" RESET, thread->tid, thread->priority);
         pq_enqueue(scheduler.ready, thread, thread->priority);
     }
 
@@ -125,7 +136,8 @@ void plan_thread(thread_t *thread) {
 }
 
 tid_t so_fork(so_handler *func, unsigned int priority) {
-    fprintf(stderr, "SO FORK %p\n", pthread_self());
+    fprintf(stderr, GRN "SO FORK %p\n" RESET, pthread_self());
+    n_threads++;
     /* Check params */
     if (!func || priority > SO_MAX_PRIO) {
         return INVALID_TID;
@@ -137,6 +149,7 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
     new_thread->preempted = 0;
     new_thread->start_routine = func;
     new_thread->status = READY;
+    new_thread->time_remaining = scheduler.time_quantum;
 
     sem_init(&new_thread->run, 0, 0);
     sem_init(&new_thread->planned, 0, 0);
@@ -145,11 +158,6 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
 
     thread_t *old_thread = scheduler.running_thread;
 
-    /* Decrement time quantum for the current thread*/
-    if (scheduler.running_thread) {
-        scheduler.running_thread->time_remaining--;
-    }
-
     /* Start thread */
     if (pthread_create(&new_thread->tid, NULL, start_thread, new_thread)) {
         fprintf(stderr, "pthread_create error %d\n", errno);
@@ -157,6 +165,13 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
 
     if (sem_wait(&new_thread->planned)) {
         fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
+    }
+
+
+    /* Decrement time quantum for the thread that called so fork */
+    if (old_thread) {
+        old_thread->time_remaining--;
+        fprintf(stderr, MAG "fork --  %d\n" RESET, old_thread->time_remaining);
     }
 
     /*  Start the forked thread now if it is the case.
@@ -170,9 +185,22 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
         if (old_thread) {
             sem_wait(&old_thread->run);
         }
+    } else {
+        /* Preempt the thread that called so fork if time quantum expired */
+        if (old_thread && old_thread->time_remaining <= 0) {
+            fprintf(stderr, RED "%p PREEMPTED\n" RESET, old_thread->tid);
+            old_thread->preempted = 1;
+            old_thread->status = READY;
+
+            plan_thread(old_thread);
+            sem_wait(&old_thread->planned);
+
+            run_next_thread();
+
+            sem_wait(&old_thread->run);
+        }
     }
     
-    fprintf(stderr, "SO FORK %p RETURNED\n", pthread_self());
     return new_thread->tid;
 }
 
@@ -185,13 +213,14 @@ int so_signal(unsigned int io) {
 }
 
 void so_exec(void) {
-    fprintf(stderr, "SO_EXEC %p\n", scheduler.running_thread->tid);
+    fprintf(stderr, MAG "SO_EXEC %p\n" RESET, scheduler.running_thread->tid);
     if (scheduler.running_thread) {
         scheduler.running_thread->time_remaining--;
+        fprintf(stderr, MAG "exec -- %d\n" RESET, scheduler.running_thread->time_remaining);
     }
 
     if (scheduler.running_thread && scheduler.running_thread->time_remaining <= 0) {
-        fprintf(stderr, "%p PREEMPTED\n", scheduler.running_thread->tid);
+        fprintf(stderr, RED "%p PREEMPTED\n" RESET, scheduler.running_thread->tid);
         scheduler.running_thread->preempted = 1;
         scheduler.running_thread->status = READY;
 
@@ -222,13 +251,14 @@ void so_end(void) {
         ll_node_t *curr_node = scheduler.threads->head;
         while (curr_node) {
             thread_t *thread = curr_node->info;
-            fprintf(stderr, "thread join %p\n\n", thread->tid);
             if (pthread_join(thread->tid, NULL)) {
                 fprintf(stderr, "pthread_join() error %d\n", errno);
             }
             curr_node = curr_node->next;
         }
     }
+
+    fprintf(stderr, "n threads %d\n", n_threads);
 
     /* Free scheduler internals */
     pq_free(scheduler.ready, free_thread);
