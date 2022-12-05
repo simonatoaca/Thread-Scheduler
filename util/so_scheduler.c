@@ -16,9 +16,7 @@
 #define RESET "\x1B[0m"
 
 typedef enum {
-    READY,
-    RUNNING,
-    WAITING,
+    ALIVE,
     TERMINATED
 } status_t;
 
@@ -27,14 +25,12 @@ typedef struct {
     unsigned int priority;
     so_handler *start_routine;
     int time_remaining;
-    unsigned int preempted;
     status_t status;
     sem_t run;
     sem_t planned;
 } thread_t;
 
 typedef struct {
-    unsigned int waiting_thread_no;
     queue_t *waiting_list;
 } io_device_t;
 
@@ -94,8 +90,7 @@ void run_next_thread() {
 
     /* Run the planned thread */
     scheduler.running_thread = new_thread;
-    scheduler.running_thread->preempted = 0;
-    scheduler.running_thread->status = RUNNING;
+    scheduler.running_thread->status = ALIVE;
     scheduler.running_thread->time_remaining = scheduler.time_quantum;
     if (sem_post(&new_thread->run)) {
         fprintf(stderr, "sem post at %s error %d\n", __LINE__, errno);
@@ -118,10 +113,9 @@ void *start_thread(void *info) {
 
 void plan_thread(thread_t *thread) {
     if (!scheduler.running_thread) {
-        fprintf(stderr, "This is the first thread/is the only one %p\n", thread->tid);
         scheduler.running_thread = thread;
     } else if (scheduler.running_thread->priority < thread->priority) {
-        fprintf(stderr, RED "GREATER PRIO %p\n" RESET, thread->tid);
+        fprintf(stderr, RED "GREATER PRIO (%d) %p\n" RESET, thread->priority, thread->tid);
 
         /* Plan current thread and then set the greater prio thread as the current one */
         thread_t *current_thread = scheduler.running_thread;
@@ -151,9 +145,8 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
     /* Initialize thread struct */
     thread_t *new_thread = calloc(1, sizeof(*new_thread));
     new_thread->priority = priority;
-    new_thread->preempted = 0;
     new_thread->start_routine = func;
-    new_thread->status = READY;
+    new_thread->status = ALIVE;
     new_thread->time_remaining = scheduler.time_quantum;
 
     sem_init(&new_thread->run, 0, 0);
@@ -182,7 +175,6 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
         Also handle preemption.
     */
     if (scheduler.running_thread == new_thread) {
-        fprintf(stderr, "Start thread cuz it's first\n");
         sem_post(&scheduler.running_thread->run);
 
         /* Preemption of the old thread */
@@ -193,8 +185,7 @@ tid_t so_fork(so_handler *func, unsigned int priority) {
         /* Preempt the thread that called so fork if time quantum expired */
         if (old_thread && old_thread->time_remaining <= 0) {
             fprintf(stderr, RED "%p PREEMPTED\n" RESET, old_thread->tid);
-            old_thread->preempted = 1;
-            old_thread->status = READY;
+            old_thread->status = ALIVE;
 
             plan_thread(old_thread);
             sem_wait(&old_thread->planned);
@@ -215,10 +206,13 @@ int so_wait(unsigned int io) {
 
     fprintf(stderr, RED "SO WAIT for %d, thread %p\n" RESET, io, scheduler.running_thread->tid);
 
+    if (scheduler.running_thread) {
+        scheduler.running_thread->time_remaining--;
+    }
+
     /* Add the calling thread to the waiting list */
     thread_t *current_thread = scheduler.running_thread;
     q_enqueue(scheduler.io_devices[io].waiting_list, current_thread);
-    scheduler.io_devices[io].waiting_thread_no++;
 
     /* Preemption */
     run_next_thread();
@@ -237,29 +231,47 @@ int so_signal(unsigned int io) {
         return 0;
     }
 
+    if (scheduler.running_thread) {
+        scheduler.running_thread->time_remaining--;
+    }
+
     fprintf(stderr, RED "SO SIGNAL %d\n" RESET, io);
     thread_t *current_thread = scheduler.running_thread;
+
+    int woken_threads = 0;
 
     while (!q_is_empty(scheduler.io_devices[io].waiting_list)) {
         ll_node_t *node = q_dequeue(scheduler.io_devices[io].waiting_list);
         thread_t *thread = node->info;
+        woken_threads++;
 
-        plan_thread(thread);
         fprintf(stderr, RED "%p WOKEN UP BY %d\n" RESET, thread->tid, io);
+        plan_thread(thread);
+        
         free(node);
     }
 
     /* A thread with a higher prio entered the sched */
     if (scheduler.running_thread != current_thread) {
-        fprintf(stderr, GRN "%p HAS HIGHER PRIO %d\n" RESET, scheduler.running_thread->tid);
-        plan_thread(current_thread);
-        sem_wait(&current_thread->planned);
+        fprintf(stderr, GRN "%p HAS HIGHER PRIO %d\n" RESET, scheduler.running_thread->tid, scheduler.running_thread->priority);
 
         sem_post(&scheduler.running_thread->run);
         sem_wait(&current_thread->run);
+    } else {
+        if (current_thread->time_remaining <= 0) {
+            fprintf(stderr, RED "%p PREEMPTED\n" RESET, current_thread->tid);
+            current_thread->status = ALIVE;
+
+            plan_thread(current_thread);
+            sem_wait(&current_thread->planned);
+
+            run_next_thread();
+
+            sem_wait(&current_thread->run);
+        }
     }
 
-    return 1;
+    return woken_threads;
 }
 
 void so_exec(void) {
@@ -270,8 +282,7 @@ void so_exec(void) {
 
     if (scheduler.running_thread && scheduler.running_thread->time_remaining <= 0) {
         fprintf(stderr, RED "%p PREEMPTED\n" RESET, scheduler.running_thread->tid);
-        scheduler.running_thread->preempted = 1;
-        scheduler.running_thread->status = READY;
+        scheduler.running_thread->status = ALIVE;
 
         thread_t *current_thread = scheduler.running_thread;
 
