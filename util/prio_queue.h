@@ -9,8 +9,8 @@
 #include "utils.h"
 
 typedef struct {
-    unsigned int max_prio;
-    queue_t **queues;
+	unsigned int max_prio;
+	queue_t **queues;
 } prio_queue_t;
 
 prio_queue_t *

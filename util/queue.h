@@ -8,7 +8,7 @@ typedef struct {
 } queue_t;
 
 queue_t *
-q_create();
+q_create(void);
 
 unsigned int
 q_get_size(queue_t *q);

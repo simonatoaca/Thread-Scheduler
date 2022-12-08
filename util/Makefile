@@ -22,4 +22,4 @@ linked_list.o: linked_list.c
 
 .PHONY: clean
 clean:
-	-rm -f so_scheduler.o libscheduler.so
+	-rm -f so_scheduler.o linked_list.o queue.o prio_queue.o libscheduler.so
