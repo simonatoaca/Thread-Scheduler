@@ -9,7 +9,8 @@
 which is used in ```pthread_create```. When the thread ends, the
 next one is started
 
-``` void *start_thread(void *info)
+``` 
+void *start_thread(void *info)
 {
 	thread_t *thread = (thread_t *)info;
 
@@ -22,7 +23,8 @@ next one is started
 	thread->status = TERMINATED;
 	run_next_thread();
 	return NULL;
-}```
+}
+```
 
 - The scheduler plans every thread that enters the program (decides
 whether to enqueue it or start it immediately) - function ```plan_thread```
