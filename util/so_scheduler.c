@@ -234,6 +234,7 @@ int so_signal(unsigned int io)
 
 	int woken_threads = 0;
 
+	/* Wake all threads that were waiting for io */
 	while (!q_is_empty(scheduler.io_devices[io].waiting_list)) {
 		ll_node_t *node = q_dequeue(scheduler.io_devices[io].waiting_list);
 		thread_t *thread = node->info;
@@ -282,7 +283,6 @@ void free_thread(ll_node_t *thread_node)
 
 void so_end(void)
 {
-
 	scheduler.is_running = 0;
 
 	/* Wait for all threads to terminate */
