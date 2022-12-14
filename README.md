@@ -9,20 +9,20 @@
 which is used in ```pthread_create```. When the thread ends, the
 next one is started
 
-> void *start_thread(void *info)
-> {
->	thread_t *thread = (thread_t *)info;
->
->	plan_thread(thread);
->
->	sem_wait(&thread->run);
->
->	thread->start_routine(thread->priority);
->
->	thread->status = TERMINATED;
->	run_next_thread();
->	return NULL;
->}
+``` void *start_thread(void *info)
+{
+	thread_t *thread = (thread_t *)info;
+
+	plan_thread(thread);
+
+	sem_wait(&thread->run);
+
+	thread->start_routine(thread->priority);
+
+	thread->status = TERMINATED;
+	run_next_thread();
+	return NULL;
+}```
 
 - The scheduler plans every thread that enters the program (decides
 whether to enqueue it or start it immediately) - function ```plan_thread```
